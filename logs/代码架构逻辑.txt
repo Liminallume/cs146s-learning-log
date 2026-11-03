@@ -1,0 +1,87 @@
+# 🚀 CS146S W1 学习日志：Agent 核心架构与源码解析
+
+> **核心图纸**：`agent核心图.png` (详见仓库图片)
+> **核心公式**：Context (上下文) = System Prompt + 工具说明 (Tools) + 历史记录 (Messages)
+
+## 🏗️ 地基和基础工具
+在搭建循环之前，需要准备好最基础的零件：
+- **包**：`inspect` (反射), `json` (解析), `os` (系统操作)
+- **LLM真实对象**：`openai_client` / `claude_client`
+- **System Prompt**：`SYSTEM_PROMPT = """..."""`。它规定了 LLM 必须按 `tool: TOOL_NAME(...)` 的格式说话，也是 Context 里最核心的一环。
+- **相对路径补全函数**：`resolve_abs_path()`，保障文件操作安全。
+
+---
+
+## ⚙️ 脚手架 (Harness)
+
+### 1. Context Engineering (上下文工程)
+- **`get_tool_str_representation()`**：用反射生成工具说明书。
+  > 这个用于反射到 `create_full_system_prompt()` 里面补全关于要传给 LLM 的工具描述 (名字，用处，LLM 要传的参数)。
+- **`create_full_system_prompt()`**：拼接 System Prompt。
+  > 其实 `create_full_system_prompt` 本身没有反射，它是循环调用 `get_tool_str_representation`，把反射得到的描述拼成一个长字符串，最后用 `.format()` 填坑进 `SYSTEM_PROMPT`。
+- **`conversation.append(...)`**：把历史记录塞进列表。
+
+### 2. Agent Loop (核心循环)
+- **`run_coding_agent_loop()`**：包含两个 `while True`。
+  > 外循环是直到用户不再发命令，内循环是直到 agent 完成任务，也就是 LLM 不再发出工具请求，输出完成用户任务的文本。
+- **`execute_llm_call()`**：
+  > 用最开始拿到的真实 LLM 对象选好模型，提供 Context，拿到 LLM 的纯文本输出。
+- **`extract_tool_invocations()`**：负责解析 LLM 返回的指令。
+  > **疑问**：在内循环里需要调用的根据解析结果返回直接能调用工具的指令，那这块是让工具函数自己映射到这里取指令吗？
+  >
+  > **答案**：`extract_tool_invocations()` 只是一个纯粹的字符串解析器。它就像一把剪刀，把大模型说的废话剪掉，只掏出里面的硬核数据：
+  > - 工具名：`"read_file"`
+  > - 参数：`{"filename": "test.py"}`
+  > 
+  > 它解析完之后，只是把这两个东西组合成一个元组 `(name, args)`，放进了列表里，交给了主循环。**它自己不执行任何文件操作。**
+
+---
+
+## 🛠️ Tools (工具：锤子和扳手)
+真正干活的本地函数。它们直接连接你的电脑硬盘。
+- `read_file_tool()`
+- `list_files_tool()`
+- `edit_file_tool()`
+- **`TOOL_REGISTRY`**（工具字典：工具注册表）
+
+---
+
+## 🧠 LLM (大模型的大脑)
+- **代码对应**：网络另一端，DeepSeek 或 GPT 的服务器。
+- 只会看 Context 并输出文字。
+
+---
+
+## 🤔 深入思考：为什么包工头不直接写 if-else，非要用字典（TOOL_REGISTRY）去映射？
+
+结合架构图升华一下：
+如果大模型是个听话的瞎子，它说“我要用锤子”。包工头如果不用字典，就得写死：
+
+```python
+if name == "read_file": ...
+elif name == "list_files": ...
+
+"""
+为什么包工头不直接写 if-else，非要用字典（TOOL_REGISTRY）去映射？
+
+如果大模型是个听话的瞎子，它说"我要用锤子"。
+包工头如果不用字典，就得写死：
+
+    if name == "read_file":
+        ...
+    elif name == "list_files":
+        ...
+
+万一以后你想给 Agent 加一个新技能（比如查天气），
+你就得回来改主循环的代码。
+
+用了 TOOL_REGISTRY（字典映射），主循环就变成了：
+
+    tool = TOOL_REGISTRY[name]   # 查字典，找到对应函数
+    resp = tool(args...)         # 执行
+
+这样，以后你加新工具，只要在字典里注册一下，
+主循环一行代码都不用改。
+
+这就叫高内聚、低耦合的工程架构！
+"""
